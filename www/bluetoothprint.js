@@ -13,7 +13,11 @@ exports.closeConnect = function (success, error) {
 };
 //打印
 exports.printText = function (stringData,success, error) {
-	
 	exec(success, error, "BluetoothPrint", "printText", [stringData]);
+};
+
+
+exports.printImage = function (stringData,success, error) {
+	exec(success, error, "BluetoothPrint", "printImage", [stringData]);
 };
 
