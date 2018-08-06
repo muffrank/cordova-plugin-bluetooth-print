@@ -47,7 +47,39 @@ import android.view.*;
 // import android.view.ContextThemeWrapper;
 
 
+import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.Hashtable;
+import java.util.Set;
+import java.util.UUID;
 
+import org.apache.cordova.CallbackContext;
+import org.apache.cordova.CordovaPlugin;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothSocket;
+import android.content.Intent;
+import android.os.Handler;
+import android.util.Log;
+
+import android.app.Activity;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Bitmap.Config;
+import android.util.Xml.Encoding;
+import android.util.Base64;
+import java.util.ArrayList;
+import java.util.List;
 
 
 public class BluetoothPrintPlugin extends CordovaPlugin {
@@ -64,6 +96,21 @@ public class BluetoothPrintPlugin extends CordovaPlugin {
     private static OutputStream outputStream = null;
     private static final UUID uuid = UUID
             .fromString("00001101-0000-1000-8000-00805F9B34FB");
+
+
+
+    private static final String LOG_TAG = "BluetoothPrinter";
+    BluetoothSocket mmSocket;
+    BluetoothDevice mmDevice;
+    OutputStream mmOutputStream;
+    InputStream mmInputStream;
+    Thread workerThread;
+    byte[] readBuffer;
+    int readBufferPosition;
+    int counter;
+    volatile boolean stopWorker;
+    Bitmap bitmap;
+
 
 
 
@@ -115,7 +162,7 @@ public class BluetoothPrintPlugin extends CordovaPlugin {
             callbackContext.success("断开连接成功！");
 
         } catch (IOException e) {
-            // TODO Auto-generated catch block 
+            // TODO Auto-generated catch block
             isConnection = true;
             callbackContext.error("断开连接失败！");
 
@@ -191,7 +238,6 @@ public class BluetoothPrintPlugin extends CordovaPlugin {
 
         try {
             String sendData = args.getString(0);
-
             final String encodedString = sendData;
             final String pureBase64Encoded = encodedString.substring(encodedString.indexOf(",") + 1);
             final byte[] decodedBytes = Base64.decode(pureBase64Encoded, Base64.DEFAULT);
@@ -206,20 +252,192 @@ public class BluetoothPrintPlugin extends CordovaPlugin {
 
             byte[] bt = decodeBitmap(bitmap);
 
-            mmOutputStream.write(bt);
+            outputStream.write(bt);
+            outputStream.flush();
+
             // tell the user data were sent
             //Log.d(LOG_TAG, "Data Sent");
             callbackContext.success("Data Sent");
-            return true;
 
-        } catch (Exception e) {
-            String errMsg = e.getMessage();
-            Log.e(LOG_TAG, errMsg);
-            e.printStackTrace();
-            callbackContext.error(errMsg);
+
+        }  catch (IOException e) {
+            callbackContext.error(e);
         }
-        return false;
+
     }
+
+    //New implementation, change old
+    public static byte[] hexStringToBytes(String hexString) {
+        if (hexString == null || hexString.equals("")) {
+            return null;
+        }
+        hexString = hexString.toUpperCase();
+        int length = hexString.length() / 2;
+        char[] hexChars = hexString.toCharArray();
+        byte[] d = new byte[length];
+        for (int i = 0; i < length; i++) {
+            int pos = i * 2;
+            d[i] = (byte) (charToByte(hexChars[pos]) << 4 | charToByte(hexChars[pos + 1]));
+        }
+        return d;
+    }
+
+    private static byte charToByte(char c) {
+        return (byte) "0123456789ABCDEF".indexOf(c);
+    }
+
+    //New implementation
+    private static Bitmap resizeImage(Bitmap bitmap, int w, int h) {
+        Bitmap BitmapOrg = bitmap;
+        int width = BitmapOrg.getWidth();
+        int height = BitmapOrg.getHeight();
+
+        if (width > w) {
+            float scaleWidth = ((float) w) / width;
+            float scaleHeight = ((float) h) / height + 24;
+            Matrix matrix = new Matrix();
+            matrix.postScale(scaleWidth, scaleWidth);
+            Bitmap resizedBitmap = Bitmap.createBitmap(BitmapOrg, 0, 0, width,
+                    height, matrix, true);
+            return resizedBitmap;
+        } else {
+            Bitmap resizedBitmap = Bitmap.createBitmap(w, height + 24, Config.RGB_565);
+            Canvas canvas = new Canvas(resizedBitmap);
+            Paint paint = new Paint();
+            canvas.drawColor(Color.WHITE);
+            canvas.drawBitmap(bitmap, (w - width) / 2, 0, paint);
+            return resizedBitmap;
+        }
+    }
+
+    private static String hexStr = "0123456789ABCDEF";
+
+    private static String[] binaryArray = {"0000", "0001", "0010", "0011",
+            "0100", "0101", "0110", "0111", "1000", "1001", "1010", "1011",
+            "1100", "1101", "1110", "1111"};
+
+    public static byte[] decodeBitmap(Bitmap bmp) {
+        int bmpWidth = bmp.getWidth();
+        int bmpHeight = bmp.getHeight();
+        List<String> list = new ArrayList<String>(); //binaryString list
+        StringBuffer sb;
+        int bitLen = bmpWidth / 8;
+        int zeroCount = bmpWidth % 8;
+        String zeroStr = "";
+        if (zeroCount > 0) {
+            bitLen = bmpWidth / 8 + 1;
+            for (int i = 0; i < (8 - zeroCount); i++) {
+                zeroStr = zeroStr + "0";
+            }
+        }
+
+        for (int i = 0; i < bmpHeight; i++) {
+            sb = new StringBuffer();
+            for (int j = 0; j < bmpWidth; j++) {
+                int color = bmp.getPixel(j, i);
+
+                int r = (color >> 16) & 0xff;
+                int g = (color >> 8) & 0xff;
+                int b = color & 0xff;
+                // if color close to white，bit='0', else bit='1'
+                if (r > 160 && g > 160 && b > 160) {
+                    sb.append("0");
+                } else {
+                    sb.append("1");
+                }
+            }
+            if (zeroCount > 0) {
+                sb.append(zeroStr);
+            }
+            list.add(sb.toString());
+        }
+
+        List<String> bmpHexList = binaryListToHexStringList(list);
+        String commandHexString = "1D763000";
+        String widthHexString = Integer.toHexString(bmpWidth % 8 == 0 ? bmpWidth / 8 : (bmpWidth / 8 + 1));
+        if (widthHexString.length() > 2) {
+//            Log.d(LOG_TAG, "DECODEBITMAP ERROR : width is too large");
+            return null;
+        } else if (widthHexString.length() == 1) {
+            widthHexString = "0" + widthHexString;
+        }
+        widthHexString = widthHexString + "00";
+
+        String heightHexString = Integer.toHexString(bmpHeight);
+        if (heightHexString.length() > 2) {
+//            Log.d(LOG_TAG, "DECODEBITMAP ERROR : height is too large");
+            return null;
+        } else if (heightHexString.length() == 1) {
+            heightHexString = "0" + heightHexString;
+        }
+        heightHexString = heightHexString + "00";
+
+        List<String> commandList = new ArrayList<String>();
+        commandList.add(commandHexString + widthHexString + heightHexString);
+        commandList.addAll(bmpHexList);
+
+        return hexList2Byte(commandList);
+    }
+
+    public static List<String> binaryListToHexStringList(List<String> list) {
+        List<String> hexList = new ArrayList<String>();
+        for (String binaryStr : list) {
+            StringBuffer sb = new StringBuffer();
+            for (int i = 0; i < binaryStr.length(); i += 8) {
+                String str = binaryStr.substring(i, i + 8);
+
+                String hexString = myBinaryStrToHexString(str);
+                sb.append(hexString);
+            }
+            hexList.add(sb.toString());
+        }
+        return hexList;
+
+    }
+
+    public static String myBinaryStrToHexString(String binaryStr) {
+        String hex = "";
+        String f4 = binaryStr.substring(0, 4);
+        String b4 = binaryStr.substring(4, 8);
+        for (int i = 0; i < binaryArray.length; i++) {
+            if (f4.equals(binaryArray[i])) {
+                hex += hexStr.substring(i, i + 1);
+            }
+        }
+        for (int i = 0; i < binaryArray.length; i++) {
+            if (b4.equals(binaryArray[i])) {
+                hex += hexStr.substring(i, i + 1);
+            }
+        }
+
+        return hex;
+    }
+
+    public static byte[] hexList2Byte(List<String> list) {
+        List<byte[]> commandList = new ArrayList<byte[]>();
+
+        for (String hexStr : list) {
+            commandList.add(hexStringToBytes(hexStr));
+        }
+        byte[] bytes = sysCopy(commandList);
+        return bytes;
+    }
+
+    public static byte[] sysCopy(List<byte[]> srcArrays) {
+        int len = 0;
+        for (byte[] srcArray : srcArrays) {
+            len += srcArray.length;
+        }
+        byte[] destArray = new byte[len];
+        int destLen = 0;
+        for (byte[] srcArray : srcArrays) {
+            System.arraycopy(srcArray, 0, destArray, destLen, srcArray.length);
+            destLen += srcArray.length;
+        }
+        return destArray;
+    }
+
+
 
 
     @Override
